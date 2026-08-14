@@ -135,6 +135,7 @@ class LokerController extends Controller
         $loker = $this->activeLokerQuery()
             ->where('loker.id', $id)
             ->firstOrFail();
+
         $cv = LamaranModel::query()
             ->where('user_id', $request->user()->id)
             ->where('is_cv_ats', true)
@@ -145,15 +146,45 @@ class LokerController extends Controller
                 ->with('info', 'Silakan buat CV ATS terlebih dahulu sebelum melamar.');
         }
 
-        $alreadyApplied = LokerApply::query()
+        // Ambil lamaran terakhir user untuk loker ini
+        $lastApply = LokerApply::query()
             ->where('user_id', $request->user()->id)
             ->where('loker_id', $loker->id)
-            ->exists();
+            ->latest('created_at')
+            ->first();
+
+        $alreadyApplied = false;
+        $nextApplyDate = null;
+
+        if ($lastApply) {
+            // Hitung selisih hari dari lamaran terakhir
+            $daysDiff = $lastApply->created_at->diffInDays(now());
+
+            // Jika belum melewati 15 hari, tandai bahwa user belum bisa melamar lagi
+            if ($daysDiff < 15) {
+                $alreadyApplied = true;
+                // Hitung tanggal kapan user boleh melamar kembali
+                $nextApplyDate = $lastApply->created_at->addDays(15);
+            }
+        }
+        // if ($lastApply) {
+        //     // Hitung selisih menit dari lamaran terakhir
+        //     $minutesDiff = $lastApply->created_at->diffInMinutes(now());
+
+        //     // Jika belum melewati 15 menit, tandai bahwa user belum bisa melamar lagi
+        //     if ($minutesDiff < 1) {
+        //         $alreadyApplied = true;
+        //         // Hitung waktu kapan user boleh melamar kembali
+        //         $nextApplyDate = $lastApply->created_at->addMinutes(1);
+        //     }
+        // }
+
 
         return view('membernonkeanggotaan.pages.loker.apply-preview', [
             'loker' => $loker,
             'cv' => $cv,
             'alreadyApplied' => $alreadyApplied,
+            'nextApplyDate' => $nextApplyDate, // <-- Variabel baru untuk tanggal bisa apply lagi
         ]);
     }
 
@@ -178,69 +209,41 @@ class LokerController extends Controller
                 ->with('info', 'Silakan buat CV ATS terlebih dahulu sebelum melamar.');
         }
 
-        $alreadyApplied = LokerApply::query()
+        // Pengecekan Keamanan Backend (Jeda 15 Hari)
+        $lastApply = LokerApply::query()
             ->where('user_id', $request->user()->id)
             ->where('loker_id', $loker->id)
-            ->exists();
+            ->latest('created_at')
+            ->first();
 
-        if ($alreadyApplied) {
+        if ($lastApply && $lastApply->created_at->diffInDays(now()) < 15) {
+            $nextDate = $lastApply->created_at->addDays(15)->translatedFormat('d F Y');
             return redirect()->route('membernonanggota.loker.history')
-                ->with('info', 'Anda sudah melamar pada lowongan ini.');
+                ->with('error', "Anda sudah melamar posisi ini. Anda baru dapat melamar kembali pada tanggal {$nextDate}.");
         }
+        // if ($lastApply && $lastApply->created_at->diffInMinutes(now()) < 1) {
+        //     $nextDate = $lastApply->created_at->addMinutes(1)->translatedFormat('d F Y, H:i');
 
-        $jobApplicationCv = null;
+        //     return redirect()->route('membernonanggota.loker.history')
+        //         ->with('error', "Anda sudah melamar posisi ini. Anda baru dapat melamar kembali pada {$nextDate} WIB.");
+        // }
 
-        DB::transaction(function () use ($request, $loker, $masterCv, &$jobApplicationCv) {
-            // 1. Duplikasi CV Master
+        // Simpan Lamaran Baru
+        DB::transaction(function () use ($request, $loker, $masterCv) {
             $jobApplicationCv = $masterCv->replicate();
             $jobApplicationCv->job_id = $loker->id;
             $jobApplicationCv->is_cv_ats = null;
             $jobApplicationCv->save();
 
-            // 2. Simpan Riwayat
             LokerApply::create([
                 'loker_id' => $loker->id,
-                'user_id' => $request->user()->id,
-                'status' => 1,
+                'user_id'  => $request->user()->id,
+                'status'   => 0,
             ]);
         });
 
-        // 3. Kirim Email ke Perusahaan dengan Validasi Konfigurasi Mailer
-        $companyEmail = $loker->perusahaan->email ?? $loker->email ?? null;
-        $emailSent = false;
-        $emailErrorMsg = null;
-
-        if ($companyEmail) {
-            // Cek dulu apakah variabel .env mailer sudah lengkap
-            if (! ApplicationSubmittedMail::hasValidConfig()) {
-                Log::warning('Pengiriman email dibatalkan: Konfigurasi MAIL pada .env belum lengkap.');
-                $emailErrorMsg = 'Konfigurasi server email belum lengkap.';
-            } else {
-                try {
-                    Mail::to($companyEmail)->send(new ApplicationSubmittedMail($jobApplicationCv, $loker));
-                    $emailSent = true;
-                } catch (\Exception $e) {
-                    Log::error('Gagal mengirim email lamaran ke perusahaan: ' . $e->getMessage());
-                    $emailErrorMsg = 'Terjadi kendala pada layanan pengiriman email.';
-                }
-            }
-        } else {
-            Log::info("Lowongan ID {$loker->id} tidak memiliki email tujuan.");
-        }
-
-        // 4. Feedback ke Pengguna
-        if ($emailSent) {
-            return redirect()->route('membernonanggota.loker.history')
-                ->with('success', 'Lamaran Anda berhasil dikirim dan email notifikasi telah diteruskan ke perusahaan.');
-        }
-
-        // Jika lamaran database sukses tapi email gagal/tidak ada email
-        $warningText = $emailErrorMsg
-            ? " ($emailErrorMsg Notifikasi email ke perusahaan tidak dapat dikirimkan saat ini)."
-            : "";
-
         return redirect()->route('membernonanggota.loker.history')
-            ->with('success', 'CV berhasil disimpan ke sistem.' . $warningText);
+            ->with('success', 'Lamaran Anda berhasil dikirim dan akan diteruskan ke perusahaan pada jadwal pengiriman harian.');
     }
 
     public function history(Request $request)

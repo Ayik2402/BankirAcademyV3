@@ -16,7 +16,8 @@
                             <tr>
                                 <th>No</th>
                                 <th>Tanggal Expirasi</th>
-                                <th>Image</th>
+                                {{-- <th>Image</th>
+                                <th>Perusahaan</th> --}}
                                 <th>Perusahaan</th>
                                 <th>Title</th>
                                 <th>Gaji</th>
@@ -214,17 +215,8 @@
                         name: 'Tanggal'
                     },
                     {
-                        data: null,
-                        render: function(data, type, row) {
-                            var imgUrl = row.e_gambar ? '/image/loker/' + row.e_gambar :
-                                '/image/default.png';
-                            return '<img src="' + imgUrl +
-                                '" style="max-width: 100px; max-height: 70px;" class="img-thumbnail">';
-                        }
-                    },
-                    {
-                        data: 'name',
-                        name: 'Nama'
+                        data: 'e_perusahaan',
+                        name: 'e_perusahaan'
                     },
                     {
                         data: 'title',
